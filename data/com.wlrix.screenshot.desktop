@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Name=wlRIX Screenshot
+Name[ja]=wlRIX スクリーンショット
+Comment=Take a picture of the screen
+Comment[ja]=画面を撮影します
+# One main category, not two: the Toolchest takes the first it recognizes, and listing two
+# makes `desktop-file-validate` warn that the entry could appear twice in some other menu.
+# Graphics is where a screenshot tool is looked for, and where Spectacle puts itself.
+Categories=Graphics;
+
+# No argument. This takes a picture; it does not open one, so it is not a file handler and
+# claims no MimeType.
+Exec=wlrix-screenshot
+TryExec=wlrix-screenshot
+Terminal=false
+
+# Hides the entry until the binary is genuinely on PATH -- which is what you want, and is why
+# `TryExec` is here as well as `Exec`. GIO enforces it where `xdg-mime` does not.
+#
+# There is no StartupWMClass: this has no toplevel window at all. It is a layer surface, which
+# never appears in a window list, so nothing could look it up by one.
+StartupNotify=false

@@ -1,0 +1,44 @@
+[package]
+name = "wlrix-screenshot"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "wlRIX screenshots — freeze the screen, pull out a region, save it or copy it."
+repository = "https://github.com/wlRIX/wlrix-screenshot"
+publish = false
+
+[dependencies]
+# The Wayland client. The region overlay is a wlr-layer-shell **overlay** surface drawn into
+# a plain shm buffer -- the same shape as `wlrix-desktop`, whose `ui` module this follows.
+smithay-client-toolkit = "0.19"
+wayland-client = "0.31"
+# `ext-image-capture-source-v1` + `ext-image-copy-capture-v1` for reading the screen back, and
+# `wlr-data-control` for putting the result on the clipboard. Neither is wrapped by
+# smithay-client-toolkit, so the bindings come from here.
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# The event loop. The Wayland connection is the only source today; the deferred repaint and
+# any future watch join the same loop rather than polling.
+calloop = "0.13"
+# The shared UI crate: the canvas, the Motif bevel, the widgets, the fonts and the palette.
+# Pinned by rev rather than taken by path, so this repo still builds from a fresh standalone
+# clone -- the same shape as the smithay pin in `wlrix-compositor`. `just link-ui` in
+# `wlrix-epoch` patches in a sibling checkout while working on both sides.
+#
+# Default features only: `image` is for *decoding* icon files, which this never does. Encoding
+# is `png` below.
+wlrix-ui = { git = "https://github.com/wlRIX/wlrix-ui", rev = "33c693db461331cf183fb4e5090fb5c6be71a6f5" }
+# Writing the PNG. The same version `wlrix-ui` pins for decoding, so this adds no crate to the
+# tree that was not already in it -- and encoding one format directly is a far smaller
+# dependency than `image`, which would pull a dozen decoders to write one file.
+png = "0.18"
+# memfd + mmap for the capture buffers, and `fcntl` on the portal pipe. Already in the tree by
+# way of calloop and smithay-client-toolkit, so it costs nothing new.
+rustix = { version = "1", features = ["fs", "mm", "event", "process", "pipe"] }
+# The config file. TOML is wlRIX's config format throughout.
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+# The portal contract: a JSON manifest in, a JSON answer out. See `src/portal.rs`.
+serde_json = "1"
+# `fork` for the clipboard owner, which has to outlive this process -- see `src/clipboard.rs`.
+libc = "0.2"
