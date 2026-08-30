@@ -82,7 +82,7 @@ impl Handle {
     ];
 
     /// Where this handle sits on a rectangle.
-    pub fn centre(self, rect: Rect) -> Point {
+    pub fn center(self, rect: Rect) -> Point {
         let (left, top) = (rect.left(), rect.top());
         // The last pixel *inside* the rectangle, not the exclusive edge -- a handle drawn one
         // pixel outside the selection reads as belonging to whatever is next to it.
@@ -195,8 +195,8 @@ impl Selection {
         };
         let grab = grab_radius(rect);
         for handle in Handle::ALL {
-            let centre = handle.centre(rect);
-            if (at.x - centre.x).abs() <= grab && (at.y - centre.y).abs() <= grab {
+            let center = handle.center(rect);
+            if (at.x - center.x).abs() <= grab && (at.y - center.y).abs() <= grab {
                 return Grip::Handle(handle);
             }
         }
@@ -349,7 +349,7 @@ impl Selection {
     }
 }
 
-/// How far from a handle's centre counts as grabbing it, for a selection this size.
+/// How far from a handle's center counts as grabbing it, for a selection this size.
 ///
 /// [`HANDLE_GRAB`] on anything roomy, and less on a small one. Eight fixed-size grab areas on a
 /// 40-pixel selection leave a sixteen-pixel square in the middle that means "move me", and a
@@ -477,9 +477,9 @@ mod tests {
     #[test]
     fn the_handles_sit_on_the_selection() {
         let rect = Rect::new(10, 20, 40, 30);
-        assert_eq!(Handle::TopLeft.centre(rect), Point::new(10, 20));
-        assert_eq!(Handle::BottomRight.centre(rect), Point::new(49, 49));
-        assert_eq!(Handle::Right.centre(rect), Point::new(49, 35));
+        assert_eq!(Handle::TopLeft.center(rect), Point::new(10, 20));
+        assert_eq!(Handle::BottomRight.center(rect), Point::new(49, 49));
+        assert_eq!(Handle::Right.center(rect), Point::new(49, 35));
     }
 
     #[test]

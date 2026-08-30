@@ -89,7 +89,7 @@ In the overlay:
   Ctrl+A                 select the whole desktop
   Enter                  save          Ctrl+C  copy          Esc  cancel
 
-Exit: 0 taken, 1 cancelled, 2 bad arguments, 3 failed.
+Exit: 0 taken, 1 canceled, 2 bad arguments, 3 failed.
 
 Settings live in ~/.config/wlrix/screenshot.toml.";
 

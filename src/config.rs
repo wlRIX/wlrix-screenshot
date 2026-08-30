@@ -11,7 +11,7 @@
 //! cursor = false          # draw the pointer into the shot
 //!
 //! [appearance]
-//! palette = "gotham"      # the colour scheme; default is "classic"
+//! palette = "gotham"      # the color scheme; default is "classic"
 //! dim = 0.55              # how far the unselected area is darkened, 0.0 to 1.0
 //! ```
 //!

@@ -128,7 +128,7 @@ pub fn layout(
     } else {
         (selection.bottom() - BAR_GAP - BAR_H).max(bounds.top())
     };
-    // Centred on the selection, then slid back onto the desktop.
+    // Centered on the selection, then slid back onto the desktop.
     let x = (selection.left() + (selection.w - bar_w) / 2)
         .clamp(bounds.left(), (bounds.right() - bar_w).max(bounds.left()));
     let rect = Rect::new(x, y, bar_w, BAR_H);
@@ -227,10 +227,10 @@ fn draw_selection(canvas: &mut Canvas, scene: &Scene, rect: Rect) {
         1,
     );
     for handle in Handle::ALL {
-        let centre = handle.centre(rect);
+        let center = handle.center(rect);
         let at = Rect::new(
-            centre.x - ox - radius,
-            centre.y - oy - radius,
+            center.x - ox - radius,
+            center.y - oy - radius,
             radius * 2 + 1,
             radius * 2 + 1,
         );
@@ -287,7 +287,7 @@ fn draw_bar(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene, bar: &Bar, se
 
 /// The panel shown before anything has been selected.
 ///
-/// Centred on this pane rather than on the desktop, and drawn on every pane: with two monitors
+/// Centered on this pane rather than on the desktop, and drawn on every pane: with two monitors
 /// there is no one place that is "the middle", and a prompt on the screen the user is not
 /// looking at is a prompt they never read.
 fn draw_prompt(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene) {
