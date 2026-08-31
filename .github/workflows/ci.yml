@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        # smithay-client-toolkit's keyboard support links the system xkbcommon, so its
+        # build script needs xkbcommon.pc (from libxkbcommon-dev) via pkg-config. This one
+        # does read keys -- Escape cancels the region overlay -- so it is not optional here.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config \
+            libxkbcommon-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all --check
+      # `--all-targets` covers the examples, which are the probes run by hand against a live
+      # session. Nothing else compiles them, so without this they rot.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --verbose
+      # The tests are the geometry, the config and the PNG encoding; capture and the clipboard
+      # need a compositor and are verified by hand, as the README describes.
+      - name: Test
+        run: cargo test --verbose

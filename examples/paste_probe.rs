@@ -12,7 +12,6 @@
 //! ```
 
 use std::io::Read;
-use std::os::fd::OwnedFd;
 
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
@@ -85,7 +84,7 @@ fn main() {
     queue.flush().expect("flush");
 
     let mut bytes = Vec::new();
-    std::fs::File::from(OwnedFd::from(read))
+    std::fs::File::from(read)
         .read_to_end(&mut bytes)
         .expect("read");
     std::fs::write(&path, &bytes).expect("write");
