@@ -149,6 +149,9 @@ pub struct Selection {
     /// "click and drag" prompt for.
     rect: Option<Rect>,
     drag: Option<Drag>,
+    /// Plane pixels per logical pixel (`Shot::scale`). The grab radius and the drag threshold
+    /// are distances a hand travels, so they grow with it; everything else is in plane pixels.
+    scale: f64,
 }
 
 impl Selection {
@@ -158,7 +161,19 @@ impl Selection {
             bounds,
             rect: None,
             drag: None,
+            scale: 1.0,
         }
+    }
+
+    /// The same selection, for a plane at `scale`.
+    pub fn scaled(mut self, scale: f64) -> Self {
+        self.scale = scale.max(1.0);
+        self
+    }
+
+    /// A distance in logical pixels, in the plane's.
+    fn reach(&self, logical: i32) -> i32 {
+        (logical as f64 * self.scale).round() as i32
     }
 
     /// A selection that starts out set -- what `--all` and `--select` produce.
@@ -171,6 +186,7 @@ impl Selection {
             bounds,
             rect: (clamped.w > 0 && clamped.h > 0).then_some(clamped),
             drag: None,
+            scale: 1.0,
         }
     }
 
@@ -193,7 +209,7 @@ impl Selection {
         let Some(rect) = self.rect else {
             return Grip::Outside;
         };
-        let grab = grab_radius(rect);
+        let grab = self.grab_radius(rect);
         for handle in Handle::ALL {
             let center = handle.center(rect);
             if (at.x - center.x).abs() <= grab && (at.y - center.y).abs() <= grab {
@@ -242,8 +258,9 @@ impl Selection {
         };
         match drag {
             Drag::Band { anchor, live } => {
-                let far_enough = (at.x - anchor.x).abs() >= DRAG_THRESHOLD
-                    || (at.y - anchor.y).abs() >= DRAG_THRESHOLD;
+                let threshold = self.reach(DRAG_THRESHOLD);
+                let far_enough =
+                    (at.x - anchor.x).abs() >= threshold || (at.y - anchor.y).abs() >= threshold;
                 if !live && !far_enough {
                     return false;
                 }
@@ -356,7 +373,18 @@ impl Selection {
 /// user who cannot find it concludes the selection cannot be moved at all. Shrinking the grab
 /// area instead keeps every gesture reachable at every size.
 pub fn grab_radius(rect: Rect) -> i32 {
-    HANDLE_GRAB.min(rect.w / 6).min(rect.h / 6).max(2)
+    grab_radius_at(rect, HANDLE_GRAB)
+}
+
+fn grab_radius_at(rect: Rect, most: i32) -> i32 {
+    most.min(rect.w / 6).min(rect.h / 6).max(2)
+}
+
+impl Selection {
+    /// [`grab_radius`], at this selection's scale.
+    pub fn grab_radius(&self, rect: Rect) -> i32 {
+        grab_radius_at(rect, self.reach(HANDLE_GRAB))
+    }
 }
 
 /// Make width and height positive, keeping the same two corners.

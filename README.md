@@ -150,6 +150,18 @@ cargo run --example paste_probe -- /tmp/paste.png
 the selection model (handles, flipping, sliding, clamping), the cropping across two monitors, the PNG encoding, the
 filename expansion, and the `user-dirs.dirs` parser.
 
+## Scaled monitors
+
+A screenshot works in one plane of pixels at the **largest scale among the captured monitors**: on a laptop panel at
+150 %, its real pixels. A selection is pixel-exact, and the saved image is full resolution -- 300 × 200 logical pixels
+come out 450 × 300. A monitor at a lower scale beside it (an external display at 100 %) is stretched up to the plane
+when it is captured, so one rectangle can still span both. `--select` takes logical desktop coordinates, as the
+compositor gives them for Alt+Print, and converts them.
+
+The overlay is drawn at the plane's resolution and fitted to each monitor with `wp_viewporter`, so the frozen desktop
+shows pixel for pixel and the bar, handles and text are the same size to the eye at any scale. Without a viewporter the
+overlay on a scaled monitor will not line up, and the program says so; the saved image is right either way.
+
 ## Not built yet
 
 - **Annotation tools.** Spectacle's pen, arrow, rectangle, highlighter and pixelate. The overlay is laid out for a
@@ -158,6 +170,3 @@ filename expansion, and the `user-dirs.dirs` parser.
   goes to the configured directory and `--output` names a path.
 - **PickColor**, which the portal advertises through this program and answers as unimplemented. The overlay already
   holds the frozen pixels, so it is a crosshair and a loupe away.
-- **HiDPI.** Everything is drawn at scale 1, as `wlrix-desktop` does. A monitor whose logical size differs from its
-  pixel size is reported on stderr rather than quietly mis-selected — a screenshot is exactly where fractional scale
-  would show.

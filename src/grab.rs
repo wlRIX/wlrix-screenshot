@@ -157,8 +157,19 @@ struct Held {
 }
 
 /// Turn the finished frames into the frozen desktop.
+///
+/// Two passes: every capture is collected first, with where its monitor sits in the logical
+/// desktop and how big it is there, because the plane they all go into is scaled by the largest
+/// of their scales -- see `shot`'s module comment -- and that is only known once all are in.
 fn collect(app: &mut App, buffers: Vec<Option<Held>>) -> Shot {
-    let mut regions = Vec::new();
+    struct Taken {
+        origin: (i32, i32),
+        logical: (i32, i32),
+        width: i32,
+        height: i32,
+        pixels: Vec<u8>,
+    }
+    let mut taken = Vec::new();
     for (index, held) in buffers.into_iter().enumerate() {
         let Some(capture) = app.wayland.captures.get_mut(index) else {
             continue;
@@ -179,23 +190,67 @@ fn collect(app: &mut App, buffers: Vec<Option<Held>>) -> Shot {
             }
         }
 
-        let Some(origin) = app.output_origin(&name) else {
+        let Some((origin, logical)) = app.output_layout(&name) else {
             eprintln!("wlrix-screenshot: {name} has no place in the layout; leaving it out");
             continue;
         };
         let (width, height) = (constraints.width as i32, constraints.height as i32);
-        app.warn_if_scaled(&name, width, height);
 
         // Copied out before `held` is dropped, which is what releases the mapping and destroys
         // the buffer. The frozen desktop has to own its pixels: the overlay redraws from them
         // on every pointer move, long after the compositor has stopped writing.
-        regions.push(Region {
-            rect: Rect::new(origin.0, origin.1, width, height),
+        taken.push(Taken {
+            origin,
+            // A compositor without `xdg_output` gives no logical size; the capture's own is the
+            // best there is, and makes that monitor scale 1.
+            logical: logical.unwrap_or((width, height)),
+            width,
+            height,
             pixels: held.memory.pixels()[..shm::Buffer::size_for(width, height)].to_vec(),
         });
         drop(held.buffer);
     }
-    Shot { regions }
+
+    let scale = plane_scale(taken.iter().map(|t| (t.width, t.logical.0)));
+    let regions = taken
+        .into_iter()
+        .map(|t| {
+            let rect = plane_rect(t.origin, t.logical, (t.width, t.height), scale);
+            Region::fit(rect, t.width, t.height, t.pixels)
+        })
+        .collect();
+    Shot { regions, scale }
+}
+
+/// The plane's scale: the largest of the monitors' own, each its captured width over its
+/// logical width. 1.0 with nothing scaled, or nothing captured.
+fn plane_scale(monitors: impl Iterator<Item = (i32, i32)>) -> f64 {
+    monitors
+        .filter(|(_, logical)| *logical > 0)
+        .map(|(pixels, logical)| pixels as f64 / logical as f64)
+        .fold(1.0, f64::max)
+}
+
+/// Where a monitor goes in the plane. One at the plane's own scale keeps exactly the size it was
+/// captured at -- rounding its logical size back up could disagree by a pixel and stretch the
+/// whole picture to make it up -- and the others are scaled to meet it.
+fn plane_rect(origin: (i32, i32), logical: (i32, i32), captured: (i32, i32), scale: f64) -> Rect {
+    let x = (origin.0 as f64 * scale).round() as i32;
+    let y = (origin.1 as f64 * scale).round() as i32;
+    let own = if logical.0 > 0 {
+        captured.0 as f64 / logical.0 as f64
+    } else {
+        1.0
+    };
+    if (own - scale).abs() < 1e-6 {
+        return Rect::new(x, y, captured.0, captured.1);
+    }
+    Rect::new(
+        x,
+        y,
+        (logical.0 as f64 * scale).round() as i32,
+        (logical.1 as f64 * scale).round() as i32,
+    )
 }
 
 /// Dispatch until `done`, or until the deadline passes.
@@ -256,5 +311,26 @@ fn settle(
         guard
             .read()
             .map_err(|err| format!("lost the compositor while capturing: {err}"))?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_plane_takes_the_largest_scale() {
+        assert_eq!(plane_scale([(1920, 1920)].into_iter()), 1.0);
+        assert_eq!(plane_scale([(2880, 1920), (1920, 1920)].into_iter()), 1.5);
+        assert_eq!(plane_scale(std::iter::empty()), 1.0);
+    }
+
+    #[test]
+    fn a_laptop_at_150_keeps_its_pixels_and_a_monitor_beside_it_is_scaled_up() {
+        let laptop = plane_rect((0, 0), (1920, 1200), (2880, 1800), 1.5);
+        assert_eq!(laptop, Rect::new(0, 0, 2880, 1800));
+        // A 1920x1080 monitor at 100 %, to the right in the logical desktop.
+        let external = plane_rect((1920, 0), (1920, 1080), (1920, 1080), 1.5);
+        assert_eq!(external, Rect::new(2880, 0, 2880, 1620));
     }
 }

@@ -21,9 +21,14 @@
 //!
 //! ## Scale
 //!
-//! Everything is drawn at scale 1, as `wlrix-desktop` does, and a HiDPI monitor is reported
-//! rather than handled -- see [`App::warn_if_scaled`]. A screenshot is exactly where fractional
-//! scale would show, so this is worth being loud about rather than quietly wrong.
+//! Each pane draws its part of the shot's plane (see `crate::shot`) **at the plane's
+//! resolution** -- on a laptop panel at 150 %, its real pixels -- and `wp_viewporter` stretches
+//! that buffer over the pane's logical size. So the frozen desktop is shown pixel for pixel, the
+//! selection lands on the pixels the saved image is cut from, and the bar and handles are drawn
+//! at the scale too (`paint`'s `ui`) rather than at a third of their size. Pointer positions
+//! arrive in logical surface coordinates and are multiplied into the plane where they enter.
+//! A monitor at a lower scale than the plane gets a buffer larger than it needs, which the
+//! compositor shrinks; nothing is lost but a little sharpness on that one screen.
 
 pub mod paint;
 
@@ -64,6 +69,10 @@ use wlrix_ui::canvas::{Canvas, Rect};
 use wlrix_ui::palette::Palette;
 use wlrix_ui::text::Fonts;
 
+use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::{
+    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
+};
+
 use crate::config::Config;
 use crate::select::{Grip, Point, Selection};
 use crate::shot::Shot;
@@ -92,13 +101,22 @@ pub struct Client {
     event_loop: EventLoop<'static, App>,
 }
 
+/// A point and a size in the logical desktop, as `xdg_output` gives them.
+type Position = (i32, i32);
+type Size = (i32, i32);
+
 /// One monitor's overlay surface.
 struct Pane {
     layer: LayerSurface,
-    /// Where this pane's top-left corner sits on the desktop.
+    /// Stretches the plane-sized buffer over the logical size. `None` without a viewporter.
+    viewport: Option<WpViewport>,
+    /// Where this pane's top-left corner sits in the plane.
     origin: (i32, i32),
+    /// Its size in the plane: the buffer's.
     width: i32,
     height: i32,
+    /// Its size in logical pixels: the surface's.
+    logical: (i32, i32),
     configured: bool,
 }
 
@@ -110,6 +128,7 @@ pub struct App {
     pub shm: Shm,
     compositor: CompositorState,
     layer_shell: LayerShell,
+    viewporter: Option<WpViewporter>,
     pool: Option<SlotPool>,
     pub qh: QueueHandle<App>,
     loop_handle: LoopHandle<'static, App>,
@@ -171,6 +190,7 @@ pub fn connect(config: &Config) -> Result<Client, String> {
             .map_err(|err| format!("wl_compositor unavailable: {err}"))?,
         layer_shell: LayerShell::bind(&globals, &qh)
             .map_err(|err| format!("wlr-layer-shell unavailable: {err}"))?,
+        viewporter: None,
         // Sized once the monitors are known: a screen's worth of pixels per pane is not a
         // guess worth making before there is anything to guess from.
         pool: None,
@@ -180,6 +200,7 @@ pub fn connect(config: &Config) -> Result<Client, String> {
         panes: Vec::new(),
         shot: Shot {
             regions: Vec::new(),
+            scale: 1.0,
         },
         selection: Selection::new(Rect::new(0, 0, 0, 0)),
         bar: None,
@@ -197,6 +218,7 @@ pub fn connect(config: &Config) -> Result<Client, String> {
         dirty: true,
     };
 
+    app.viewporter = app.registry_state.bind_one(&qh, 1..=1, ()).ok();
     app.wayland.output_sources = app.registry_state.bind_one(&qh, 1..=1, ()).ok();
     app.wayland.copy = app.registry_state.bind_one(&qh, 1..=1, ()).ok();
     // Optional: without it the Copy button is not offered. See `crate::clipboard`.
@@ -232,7 +254,8 @@ pub fn run(client: Client, shot: Shot, preset: Option<Rect>) -> Result<Choice, S
     app.selection = match preset {
         Some(rect) => Selection::preset(bounds, rect),
         None => Selection::new(bounds),
-    };
+    }
+    .scaled(shot.scale);
     app.shot = shot;
     app.refresh_bar();
     app.open_panes()?;
@@ -257,45 +280,21 @@ impl App {
         info.name.clone()
     }
 
-    /// Where a monitor's top-left corner sits on the desktop.
+    /// Where a monitor's top-left corner sits in the logical desktop, and its logical size.
     ///
     /// `logical_position` first, which is `xdg_output`'s answer and the one that accounts for
     /// scaling; `location` is `wl_output.geometry`'s and is what is left when the compositor
-    /// has no `xdg_output`.
-    pub fn output_origin(&self, name: &str) -> Option<(i32, i32)> {
+    /// has no `xdg_output` -- which gives no logical size either.
+    pub fn output_layout(&self, name: &str) -> Option<(Position, Option<Size>)> {
         let info = self
             .output_state
             .outputs()
             .filter_map(|output| self.output_state.info(&output))
             .find(|info| info.name.as_deref() == Some(name))?;
-        Some(info.logical_position.unwrap_or(info.location))
-    }
-
-    /// Say so, once, if a monitor's captured size is not its logical size.
-    ///
-    /// That is a scaled monitor, and this program draws everything at scale 1 -- the selection
-    /// would be a fraction of the size the user aimed at. Reported rather than corrected: a
-    /// HiDPI pass is real work, and silently handing back the wrong rectangle would be worse
-    /// than saying which monitor cannot be trusted.
-    pub fn warn_if_scaled(&self, name: &str, width: i32, height: i32) {
-        let Some(info) = self
-            .output_state
-            .outputs()
-            .filter_map(|output| self.output_state.info(&output))
-            .find(|info| info.name.as_deref() == Some(name))
-        else {
-            return;
-        };
-        if let Some((lw, lh)) = info.logical_size
-            && (lw, lh) != (width, height)
-        {
-            eprintln!(
-                "wlrix-screenshot: {name} is {width}x{height} pixels but {lw}x{lh} logical \
-                 (scale {}); this program draws at scale 1, so the overlay on that monitor \
-                 will not line up",
-                info.scale_factor,
-            );
-        }
+        Some((
+            info.logical_position.unwrap_or(info.location),
+            info.logical_size,
+        ))
     }
 
     /// Create one overlay surface per monitor that was captured.
@@ -311,13 +310,22 @@ impl App {
                 continue;
             };
             let origin = info.logical_position.unwrap_or(info.location);
+            let scale = self.shot.scale;
+            let plane_origin = (
+                (origin.0 as f64 * scale).round() as i32,
+                (origin.1 as f64 * scale).round() as i32,
+            );
             let Some(rect) = regions
                 .iter()
-                .find(|rect| (rect.x, rect.y) == origin)
+                .find(|rect| (rect.x, rect.y) == plane_origin)
                 .copied()
             else {
                 continue;
             };
+            let logical = info.logical_size.unwrap_or((
+                (rect.w as f64 / scale).round() as i32,
+                (rect.h as f64 / scale).round() as i32,
+            ));
 
             let surface = self.compositor.create_surface(&self.qh);
             let layer = self.layer_shell.create_layer_surface(
@@ -337,15 +345,27 @@ impl App {
             // to honor this on map rather than on first click -- until it does, keys go to
             // whatever window is underneath, invisibly.
             layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-            layer.set_size(rect.w as u32, rect.h as u32);
+            layer.set_size(logical.0 as u32, logical.1 as u32);
+            let viewport = self
+                .viewporter
+                .as_ref()
+                .map(|viewporter| viewporter.get_viewport(layer.wl_surface(), &self.qh, ()));
+            if viewport.is_none() && (rect.w, rect.h) != logical {
+                eprintln!(
+                    "wlrix-screenshot: the compositor has no wp_viewporter, so the overlay on a \
+                     scaled monitor will not line up; the saved image is still right"
+                );
+            }
             layer.commit();
 
             total += (rect.w * rect.h) as usize * 4;
             self.panes.push(Pane {
                 layer,
-                origin,
+                viewport,
+                origin: plane_origin,
                 width: rect.w,
                 height: rect.h,
+                logical,
                 configured: false,
             });
         }
@@ -376,6 +396,7 @@ impl App {
             rect,
             self.selection.bounds(),
             &mut self.fonts,
+            self.shot.scale,
             |button| button != Button::Copy || can_copy,
         ));
     }
@@ -426,10 +447,14 @@ impl App {
             pressed: self.pressed,
             palette: self.palette,
             dim: self.dim,
+            ui: self.shot.scale,
         };
         paint::paint(&mut canvas, &mut self.fonts, &scene);
 
         let pane = &self.panes[index];
+        if let Some(viewport) = &pane.viewport {
+            viewport.set_destination(pane.logical.0, pane.logical.1);
+        }
         let surface = pane.layer.wl_surface();
         surface.damage_buffer(0, 0, width, height);
         buffer
@@ -578,10 +603,11 @@ impl LayerShellHandler for App {
             return;
         };
         let (width, height) = configure.new_size;
-        // A zero means "you choose", and what this chose is already in `width`/`height`.
+        // A zero means "you choose", and what this chose is already in `logical`. The buffer
+        // stays the size of this monitor's part of the plane either way: that is what there is
+        // to show, and the viewport fits it to whatever the surface is.
         if width != 0 && height != 0 {
-            self.panes[index].width = width as i32;
-            self.panes[index].height = height as i32;
+            self.panes[index].logical = (width as i32, height as i32);
         }
         self.panes[index].configured = true;
         self.dirty = true;
@@ -596,7 +622,8 @@ impl CompositorHandler for App {
         _surface: &WlSurface,
         _new_factor: i32,
     ) {
-        // Everything is drawn at scale 1; see the module docs and `warn_if_scaled`.
+        // Drawn at the plane's scale whatever the output's integer scale says; see the module
+        // docs.
     }
 
     fn transform_changed(
@@ -650,10 +677,12 @@ impl PointerHandler for App {
                 continue;
             };
             let origin = self.panes[index].origin;
-            // Surface-local to global, which is the only place the two coordinate systems meet.
+            // Surface-local to global, which is the only place the two coordinate systems meet:
+            // the surface is logical, the plane is at the shot's scale.
+            let scale = self.shot.scale;
             self.at = Point::new(
-                origin.0 + event.position.0 as i32,
-                origin.1 + event.position.1 as i32,
+                origin.0 + (event.position.0 * scale).floor() as i32,
+                origin.1 + (event.position.1 * scale).floor() as i32,
             );
 
             match event.kind {
@@ -887,3 +916,5 @@ delegate_keyboard!(App);
 delegate_pointer!(App);
 delegate_layer!(App);
 delegate_registry!(App);
+smithay_client_toolkit::reexports::client::delegate_noop!(App: WpViewporter);
+smithay_client_toolkit::reexports::client::delegate_noop!(App: WpViewport);

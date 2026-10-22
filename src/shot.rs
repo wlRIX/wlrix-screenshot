@@ -6,6 +6,16 @@
 //! and never learns there is more than one monitor -- which is what lets a selection be dragged
 //! across the gap between two of them.
 //!
+//! ## The plane, and scale
+//!
+//! The global coordinates are **pixels of a plane at [`Shot::scale`]**: the compositor's
+//! logical desktop multiplied by the largest scale among the captured monitors. On a laptop
+//! panel at 150 % that is its real pixels, so a selection is pixel-exact and the saved image is
+//! full resolution; on monitors all at 100 % it is the logical desktop, as it always was. A
+//! monitor at a lower scale than the plane -- an external display at 100 % beside that laptop --
+//! has its capture stretched up to the plane when it is collected ([`Region::fit`]), so the two
+//! still meet edge to edge and one rectangle can span both.
+//!
 //! ## Pixels
 //!
 //! The compositor writes `Xrgb8888` or `Argb8888`, both of which are a native-endian `u32` of
@@ -32,6 +42,26 @@ pub struct Region {
 }
 
 impl Region {
+    /// A capture placed at `rect` in the plane, stretched (nearest pixel) when it came back a
+    /// different size -- a monitor at a lower scale than the plane. `pixels` is `width` by
+    /// `height`, four bytes each.
+    pub fn fit(rect: Rect, width: i32, height: i32, pixels: Vec<u8>) -> Self {
+        if (rect.w, rect.h) == (width, height) || width <= 0 || height <= 0 {
+            return Self { rect, pixels };
+        }
+        let (w, h) = (rect.w.max(0) as usize, rect.h.max(0) as usize);
+        let mut out = vec![0u8; w * h * 4];
+        for y in 0..h {
+            let sy = (y * height as usize / h.max(1)).min(height as usize - 1);
+            for x in 0..w {
+                let sx = (x * width as usize / w.max(1)).min(width as usize - 1);
+                let from = (sy * width as usize + sx) * 4;
+                out[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&pixels[from..from + 4]);
+            }
+        }
+        Self { rect, pixels: out }
+    }
+
     /// One pixel, or `None` off this monitor. Coordinates are **global**, not region-local.
     fn at(&self, x: i32, y: i32) -> Option<u32> {
         if !self.rect.contains(x, y) {
@@ -48,6 +78,8 @@ impl Region {
 /// The whole desktop, frozen.
 pub struct Shot {
     pub regions: Vec<Region>,
+    /// Plane pixels per logical pixel; see the module comment. 1.0 when no monitor is scaled.
+    pub scale: f64,
 }
 
 /// What the desktop reads as where no monitor covers it.
@@ -171,9 +203,26 @@ mod tests {
     }
 
     #[test]
+    fn a_lower_scale_monitor_is_stretched_to_the_plane() {
+        // A 2x1 capture placed into a 4x2 rectangle: each pixel becomes a 2x2 block.
+        let mut pixels = Vec::new();
+        pixels.extend_from_slice(&0xff11_1111u32.to_ne_bytes());
+        pixels.extend_from_slice(&0xff22_2222u32.to_ne_bytes());
+        let region = Region::fit(Rect::new(0, 0, 4, 2), 2, 1, pixels);
+        let shot = Shot {
+            regions: vec![region],
+            scale: 2.0,
+        };
+        assert_eq!(shot.pixel(1, 1), 0xff11_1111);
+        assert_eq!(shot.pixel(2, 0), 0xff22_2222);
+        assert_eq!(shot.pixel(3, 1), 0xff22_2222);
+    }
+
+    #[test]
     fn one_monitor_bounds_itself() {
         let shot = Shot {
             regions: vec![region(0, 0, 4, 3, 0xff11_2233)],
+            scale: 1.0,
         };
         assert_eq!(shot.bounds(), Rect::new(0, 0, 4, 3));
         assert_eq!(shot.pixel(3, 2), 0xff11_2233);
@@ -188,6 +237,7 @@ mod tests {
                 region(0, 0, 4, 4, 0xffaa_0000),
                 region(4, 0, 4, 4, 0xff00_bb00),
             ],
+            scale: 1.0,
         };
         assert_eq!(shot.bounds(), Rect::new(0, 0, 8, 4));
         assert_eq!(shot.pixel(0, 0), 0xffaa_0000);
@@ -203,6 +253,7 @@ mod tests {
                 region(0, 0, 4, 4, 0xffaa_0000),
                 region(4, 0, 4, 4, 0xff00_bb00),
             ],
+            scale: 1.0,
         };
         let image = shot.crop(Rect::new(2, 1, 4, 2));
         assert_eq!((image.width, image.height), (4, 2));
@@ -220,6 +271,7 @@ mod tests {
                 region(0, 0, 2, 4, 0xffaa_0000),
                 region(2, 2, 2, 2, 0xff00_bb00),
             ],
+            scale: 1.0,
         };
         assert_eq!(shot.bounds(), Rect::new(0, 0, 4, 4));
         // Top-right is covered by neither.
@@ -232,6 +284,7 @@ mod tests {
     fn a_crop_outside_every_monitor_is_still_an_image() {
         let shot = Shot {
             regions: vec![region(0, 0, 2, 2, 0xffff_ffff)],
+            scale: 1.0,
         };
         let image = shot.crop(Rect::new(100, 100, 2, 2));
         assert_eq!(image.rgb, vec![0; 2 * 2 * 3]);
@@ -241,6 +294,7 @@ mod tests {
     fn an_empty_selection_will_not_encode() {
         let shot = Shot {
             regions: vec![region(0, 0, 2, 2, 0xffff_ffff)],
+            scale: 1.0,
         };
         assert!(shot.crop(Rect::new(0, 0, 0, 5)).encode_png().is_err());
     }
@@ -250,6 +304,7 @@ mod tests {
     fn a_crop_encodes_to_a_png_without_alpha() {
         let shot = Shot {
             regions: vec![region(0, 0, 2, 2, 0x0012_3456)],
+            scale: 1.0,
         };
         let png = shot.crop(Rect::new(0, 0, 2, 2)).encode_png().unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");

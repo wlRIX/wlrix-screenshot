@@ -6,8 +6,10 @@
 //! place and using them for both is what stops the two drifting -- a button that lights up
 //! somewhere other than where it can be pressed is the classic way that goes wrong.
 //!
-//! Everything here works in **global** desktop coordinates and subtracts the pane's origin at
-//! the last moment. That is what lets a selection, and the bar under it, span two monitors: each
+//! Everything here works in **global** desktop coordinates -- the plane of `crate::shot`, real
+//! pixels at the largest monitor scale -- and subtracts the pane's origin at the last moment. The
+//! sizes below are logical pixels, multiplied by that scale (`ui`) where they are used, so the
+//! bar and the handles are the same size to the eye on a 150 % laptop panel as at 100 %. That is what lets a selection, and the bar under it, span two monitors: each
 //! pane draws the part of the same global picture that falls on its own screen.
 
 use wlrix_ui::bevel::Bevel;
@@ -17,7 +19,12 @@ use wlrix_ui::palette::Palette;
 use wlrix_ui::text::{Face, Fonts, Run};
 use wlrix_ui::{motif, widget};
 
-use crate::select::{Handle, Selection, grab_radius};
+use crate::select::{Handle, Selection};
+
+/// A size in logical pixels, in the plane's.
+fn sc(logical: i32, ui: f64) -> i32 {
+    (logical as f64 * ui).round() as i32
+}
 
 /// How tall the button bar is.
 const BAR_H: i32 = 32;
@@ -70,6 +77,8 @@ pub struct Bar {
     pub buttons: Vec<(Button, Rect)>,
     /// Where the `1280 × 800` readout goes.
     readout: Rect,
+    /// The scale it was laid out at, which its text is drawn at too.
+    ui: f64,
 }
 
 impl Bar {
@@ -99,52 +108,58 @@ pub fn layout(
     selection: Rect,
     bounds: Rect,
     fonts: &mut Fonts,
+    ui: f64,
     enabled: impl Fn(Button) -> bool,
 ) -> Bar {
+    let (bar_h, bar_pad, bar_gap) = (sc(BAR_H, ui), sc(BAR_PAD, ui), sc(BAR_GAP, ui));
+    let button_h = sc(BUTTON_H, ui);
     let mut widths = Vec::new();
     for button in Button::ORDER {
         if !enabled(button) {
             continue;
         }
-        let text = fonts.width(Face::Regular, widget::BUTTON_PX, button.label());
-        widths.push((button, (text + BUTTON_PAD * 2).max(BUTTON_MIN_W)));
+        let text = fonts.width(Face::Regular, widget::BUTTON_PX * ui as f32, button.label());
+        widths.push((
+            button,
+            (text + sc(BUTTON_PAD, ui) * 2).max(sc(BUTTON_MIN_W, ui)),
+        ));
     }
 
     // `1280 × 800` is the widest the readout gets on any screen anyone has; measured rather
     // than guessed so the bar does not change width as the selection is dragged.
-    let readout_w = fonts.width(Face::Regular, READOUT_PX, "8888 \u{d7} 8888");
-    let buttons_w: i32 = widths.iter().map(|(_, w)| w + BAR_PAD).sum();
-    let bar_w = BAR_PAD * 2 + readout_w + BAR_PAD + buttons_w - BAR_PAD;
+    let readout_w = fonts.width(Face::Regular, READOUT_PX * ui as f32, "8888 \u{d7} 8888");
+    let buttons_w: i32 = widths.iter().map(|(_, w)| w + bar_pad).sum();
+    let bar_w = bar_pad * 2 + readout_w + bar_pad + buttons_w - bar_pad;
 
     // Under the selection by preference, above it when there is no room, and inside it when
     // there is no room either way -- a selection covering the whole screen has nowhere else
     // for the bar to be, and a bar off the edge is a bar that cannot be pressed.
-    let below = selection.bottom() + BAR_GAP;
-    let above = selection.top() - BAR_GAP - BAR_H;
-    let y = if below + BAR_H <= bounds.bottom() {
+    let below = selection.bottom() + bar_gap;
+    let above = selection.top() - bar_gap - bar_h;
+    let y = if below + bar_h <= bounds.bottom() {
         below
     } else if above >= bounds.top() {
         above
     } else {
-        (selection.bottom() - BAR_GAP - BAR_H).max(bounds.top())
+        (selection.bottom() - bar_gap - bar_h).max(bounds.top())
     };
     // Centered on the selection, then slid back onto the desktop.
     let x = (selection.left() + (selection.w - bar_w) / 2)
         .clamp(bounds.left(), (bounds.right() - bar_w).max(bounds.left()));
-    let rect = Rect::new(x, y, bar_w, BAR_H);
+    let rect = Rect::new(x, y, bar_w, bar_h);
 
     let readout = Rect::new(
-        rect.left() + BAR_PAD,
-        rect.top() + BAR_PAD,
+        rect.left() + bar_pad,
+        rect.top() + bar_pad,
         readout_w,
-        BUTTON_H,
+        button_h,
     );
-    let mut cursor = readout.right() + BAR_PAD;
+    let mut cursor = readout.right() + bar_pad;
     let buttons = widths
         .into_iter()
         .map(|(button, w)| {
-            let at = Rect::new(cursor, rect.top() + BAR_PAD, w, BUTTON_H);
-            cursor += w + BAR_PAD;
+            let at = Rect::new(cursor, rect.top() + bar_pad, w, button_h);
+            cursor += w + bar_pad;
             (button, at)
         })
         .collect();
@@ -153,6 +168,7 @@ pub fn layout(
         rect,
         buttons,
         readout,
+        ui,
     }
 }
 
@@ -169,6 +185,8 @@ pub struct Scene<'a> {
     pub palette: &'a Palette,
     /// How far the area outside the selection is darkened.
     pub dim: u8,
+    /// Plane pixels per logical pixel: what every size here is multiplied by.
+    pub ui: f64,
 }
 
 /// Paint one pane.
@@ -214,17 +232,24 @@ fn draw_selection(canvas: &mut Canvas, scene: &Scene, rect: Rect) {
     let local = Rect::new(rect.x - ox, rect.y - oy, rect.w, rect.h);
 
     // Two outlines rather than one: a single line disappears against whatever it happens to
-    // be drawn over, and a screenshot selection is over arbitrary pixels by definition.
-    canvas.stroke_rect(local.inset(-1), scene.palette.outer_line);
-    canvas.stroke_rect(local, scene.palette.select_fill);
+    // be drawn over, and a screenshot selection is over arbitrary pixels by definition. Each a
+    // logical pixel thick, so as many plane pixels as the scale rounds to.
+    let line = sc(1, scene.ui).max(1);
+    for step in 0..line {
+        canvas.stroke_rect(local.inset(-1 - step), scene.palette.outer_line);
+        canvas.stroke_rect(local.inset(step), scene.palette.select_fill);
+    }
 
     // Handles are squares, not circles: this is a Motif desktop, and a square handle with a
     // bevel is what a Motif sizing grip looks like.
-    let radius = grab_radius(rect).min(HANDLE_DRAW);
+    let radius = scene
+        .selection
+        .grab_radius(rect)
+        .min(sc(HANDLE_DRAW, scene.ui));
     let bevel = Bevel::raised(
         scene.palette.face_top_shadow,
         scene.palette.face_bottom_shadow,
-        1,
+        line,
     );
     for handle in Handle::ALL {
         let center = handle.center(rect);
@@ -243,6 +268,7 @@ fn draw_bar(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene, bar: &Bar, se
     let (ox, oy) = scene.origin;
     let shift = |rect: Rect| Rect::new(rect.x - ox, rect.y - oy, rect.w, rect.h);
 
+    let ui = bar.ui;
     motif::panel(
         canvas,
         shift(bar.rect),
@@ -250,19 +276,21 @@ fn draw_bar(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene, bar: &Bar, se
         Bevel::raised(
             scene.palette.panel_top_shadow,
             scene.palette.panel_bottom_shadow,
-            2,
+            sc(2, ui),
         ),
     );
 
     // The size, in the multiplication sign the rest of the desktop uses rather than an `x`.
+    // Plane pixels, which on a scaled monitor are its real ones: the size the saved image is.
     let readout = shift(bar.readout);
+    let px = READOUT_PX * ui as f32;
     let text = format!("{} \u{d7} {}", selection.w, selection.h);
-    let baseline = readout.top() + (readout.h + fonts.ascent(Face::Regular, READOUT_PX)) / 2 - 2;
+    let baseline = readout.top() + (readout.h + fonts.ascent(Face::Regular, px)) / 2 - sc(2, ui);
     fonts.draw(
         canvas,
         Run {
             face: Face::Regular,
-            px: READOUT_PX,
+            px,
             x: readout.left(),
             baseline,
             color: scene.palette.foreground,
@@ -274,15 +302,67 @@ fn draw_bar(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene, bar: &Bar, se
         // Pressed only while the pointer is still on the button it went down on, which is what
         // lets a press be taken back by sliding off before releasing.
         let held = scene.pressed == Some(*button) && scene.hovered == Some(*button);
-        widget::button(
+        draw_button(
             canvas,
             fonts,
             scene.palette,
             shift(*rect),
             button.label(),
             held,
+            ui,
         );
     }
+}
+
+/// `wlrix_ui::widget::button`, at a scale: the same face, bevel and label, each sized in logical
+/// pixels times `ui`. Drawn here because the shared widget has no size to give it, and this is
+/// the one place it is drawn on a scaled surface.
+fn draw_button(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    palette: &Palette,
+    rect: Rect,
+    label: &str,
+    pressed: bool,
+    ui: f64,
+) {
+    let thickness = sc(palette.metrics.shadow_thickness_default, ui).max(1);
+    let (fill, bevel) = if pressed {
+        (
+            palette.armed,
+            Bevel::sunken(
+                palette.face_top_shadow,
+                palette.face_bottom_shadow,
+                thickness,
+            ),
+        )
+    } else {
+        (
+            palette.face,
+            Bevel::raised(
+                palette.face_top_shadow,
+                palette.face_bottom_shadow,
+                thickness,
+            ),
+        )
+    };
+    motif::panel(canvas, rect, fill, bevel);
+    let nudge = if pressed { sc(1, ui) } else { 0 };
+    let px = widget::BUTTON_PX * ui as f32;
+    let text_w = fonts.width(Face::Regular, px, label);
+    let x = rect.left() + (rect.w - text_w) / 2 + nudge;
+    let baseline = rect.top() + (rect.h + fonts.ascent(Face::Regular, px)) / 2 - sc(2, ui) + nudge;
+    fonts.draw(
+        canvas,
+        Run {
+            face: Face::Regular,
+            px,
+            x,
+            baseline,
+            color: palette.foreground,
+        },
+        label,
+    );
 }
 
 /// The panel shown before anything has been selected.
@@ -292,13 +372,15 @@ fn draw_bar(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene, bar: &Bar, se
 /// looking at is a prompt they never read.
 fn draw_prompt(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene) {
     const TEXT: &str = "Click and drag to select an area.";
-    let text_w = fonts.width(Face::Regular, PROMPT_PX, TEXT);
-    let line_h = fonts.line_height(Face::Regular, PROMPT_PX);
+    let px = PROMPT_PX * scene.ui as f32;
+    let pad = sc(PROMPT_PAD, scene.ui);
+    let text_w = fonts.width(Face::Regular, px, TEXT);
+    let line_h = fonts.line_height(Face::Regular, px);
     let panel = Rect::new(
-        (canvas.width() - text_w) / 2 - PROMPT_PAD,
-        (canvas.height() - line_h) / 2 - PROMPT_PAD,
-        text_w + PROMPT_PAD * 2,
-        line_h + PROMPT_PAD * 2,
+        (canvas.width() - text_w) / 2 - pad,
+        (canvas.height() - line_h) / 2 - pad,
+        text_w + pad * 2,
+        line_h + pad * 2,
     );
     motif::panel(
         canvas,
@@ -307,16 +389,16 @@ fn draw_prompt(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene) {
         Bevel::raised(
             scene.palette.panel_top_shadow,
             scene.palette.panel_bottom_shadow,
-            2,
+            sc(2, scene.ui),
         ),
     );
-    let baseline = fonts.centered_baseline(Face::Regular, PROMPT_PX, panel);
+    let baseline = fonts.centered_baseline(Face::Regular, px, panel);
     fonts.draw(
         canvas,
         Run {
             face: Face::Regular,
-            px: PROMPT_PX,
-            x: panel.left() + PROMPT_PAD,
+            px,
+            x: panel.left() + pad,
             baseline,
             color: scene.palette.foreground,
         },

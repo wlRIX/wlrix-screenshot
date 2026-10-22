@@ -138,6 +138,19 @@ fn parse_args() -> Result<Option<Args>, String> {
 }
 
 /// `X,Y,W,H`, as the compositor writes it.
+/// A rectangle of the logical desktop, in the shot's plane: the edges scaled and rounded, so a
+/// window's frame lands on the pixels it was drawn on.
+fn to_plane(rect: Rect, scale: f64) -> Rect {
+    let edge = |value: i32| (value as f64 * scale).round() as i32;
+    let (left, top) = (edge(rect.left()), edge(rect.top()));
+    Rect::new(
+        left,
+        top,
+        edge(rect.right()) - left,
+        edge(rect.bottom()) - top,
+    )
+}
+
 fn parse_rect(text: &str) -> Result<Rect, String> {
     let parts: Vec<&str> = text.split(',').map(str::trim).collect();
     let [x, y, w, h] = parts.as_slice() else {
@@ -243,7 +256,9 @@ fn run(mut args: Args) -> Result<bool, String> {
     let preset = match args.mode {
         Mode::Region => None,
         Mode::All => Some(bounds),
-        Mode::Preset(rect) => Some(rect),
+        // The compositor describes a window in its logical desktop; the shot's plane is that at
+        // its scale. See `shot`'s module comment.
+        Mode::Preset(rect) => Some(to_plane(rect, shot.scale)),
     };
 
     let (rect, save, copy) = if args.interactive {
@@ -305,6 +320,7 @@ impl CloneRef for Shot {
                     pixels: region.pixels.clone(),
                 })
                 .collect(),
+            scale: self.scale,
         }
     }
 }
