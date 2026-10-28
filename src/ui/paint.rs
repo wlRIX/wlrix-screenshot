@@ -19,6 +19,7 @@ use wlrix_ui::palette::Palette;
 use wlrix_ui::text::{Face, Fonts, Run};
 use wlrix_ui::{motif, widget};
 
+use crate::i18n::tr;
 use crate::select::{Handle, Selection};
 
 /// A size in logical pixels, in the plane's.
@@ -64,9 +65,9 @@ impl Button {
 
     pub fn label(self) -> &'static str {
         match self {
-            Button::Save => "Save",
-            Button::Copy => "Copy",
-            Button::Cancel => "Cancel",
+            Button::Save => tr("Save", "保存"),
+            Button::Copy => tr("Copy", "コピー"),
+            Button::Cancel => tr("Cancel", "キャンセル"),
         }
     }
 }
@@ -371,10 +372,13 @@ fn draw_button(
 /// there is no one place that is "the middle", and a prompt on the screen the user is not
 /// looking at is a prompt they never read.
 fn draw_prompt(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene) {
-    const TEXT: &str = "Click and drag to select an area.";
+    let text = tr(
+        "Click and drag to select an area.",
+        "ドラッグして範囲を選択してください。",
+    );
     let px = PROMPT_PX * scene.ui as f32;
     let pad = sc(PROMPT_PAD, scene.ui);
-    let text_w = fonts.width(Face::Regular, px, TEXT);
+    let text_w = fonts.width(Face::Regular, px, text);
     let line_h = fonts.line_height(Face::Regular, px);
     let panel = Rect::new(
         (canvas.width() - text_w) / 2 - pad,
@@ -402,6 +406,6 @@ fn draw_prompt(canvas: &mut Canvas, fonts: &mut Fonts, scene: &Scene) {
             baseline,
             color: scene.palette.foreground,
         },
-        TEXT,
+        text,
     );
 }

@@ -8,6 +8,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod grab;
+pub mod i18n;
 pub mod portal;
 pub mod save;
 pub mod select;
